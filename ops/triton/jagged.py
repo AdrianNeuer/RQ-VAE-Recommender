@@ -1,6 +1,6 @@
 import torch
-import triton
-import triton.language as tl
+# import triton
+# import triton.language as tl
 
 from torch import Tensor
 from torch.autograd import Function
@@ -47,14 +47,16 @@ class PaddedToJaggedTensor(Function):
         target._offsets = torch.empty(len(lengths)+1, dtype=x.dtype, device=x.device, requires_grad=x.requires_grad)
         target._metadata_cache = {}
 
-        grid = lambda meta: (B*triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(D, meta['BLOCK_SIZE_D']),)
+        # grid = lambda meta: (B*triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(D, meta['BLOCK_SIZE_D']),)
 
-        _padded_to_jagged_kernel[grid](
-            x, lengths, offsets,
-            target._values, target._offsets,
-            x.stride(0), x.stride(1), x.stride(2), target._values.stride(0),
-            B, N, D, BLOCK_SIZE_N=32, BLOCK_SIZE_D=D
-        )
+        # _padded_to_jagged_kernel[grid](
+        #     x, lengths, offsets,
+        #     target._values, target._offsets,
+        #     x.stride(0), x.stride(1), x.stride(2), target._values.stride(0),
+        #     B, N, D, BLOCK_SIZE_N=32, BLOCK_SIZE_D=D
+        # )
+
+        target._values, target._offsets = _padded_to_jagged(x, lengths, device=x.device)
 
         # Hack: Fixes autograd failure:
         target._get_max_seqlen()
@@ -89,37 +91,51 @@ def jagged_to_flattened_tensor(x: NestedTensor) -> Tensor:
     return x.values()
 
 
-@triton.jit
-def _padded_to_jagged_kernel(
-    x_ptr,
-    lengths_ptr,
-    offsets_ptr,
-    out_values_ptr,
-    out_offsets_ptr,
-    x_stride_B, x_stride_N, x_stride_D,
-    out_values_stride_B,
-    B, N, D,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_D: tl.constexpr,
-):
-    assert BLOCK_SIZE_D == D
-    pid_n = tl.program_id(0)
-    num_pids_n = tl.cdiv(N, BLOCK_SIZE_N)
+# @triton.jit
+# def _padded_to_jagged_kernel(
+#     x_ptr,
+#     lengths_ptr,
+#     offsets_ptr,
+#     out_values_ptr,
+#     out_offsets_ptr,
+#     x_stride_B, x_stride_N, x_stride_D,
+#     out_values_stride_B,
+#     B, N, D,
+#     BLOCK_SIZE_N: tl.constexpr,
+#     BLOCK_SIZE_D: tl.constexpr,
+# ):
+#     assert BLOCK_SIZE_D == D
+#     pid_n = tl.program_id(0)
+#     num_pids_n = tl.cdiv(N, BLOCK_SIZE_N)
 
-    row_group = pid_n // num_pids_n
-    col_group = pid_n % num_pids_n
+#     row_group = pid_n // num_pids_n
+#     col_group = pid_n % num_pids_n
 
-    jagged_row_start_offset, jagged_row_end_offset = tl.load(offsets_ptr + row_group), tl.load(offsets_ptr + row_group + 1)
-    padded_tile_start_ptr = x_ptr + row_group*x_stride_B + col_group*BLOCK_SIZE_N*x_stride_N
-    padded_tile_offsets = tl.arange(0, end=BLOCK_SIZE_N*BLOCK_SIZE_D)
+#     jagged_row_start_offset, jagged_row_end_offset = tl.load(offsets_ptr + row_group), tl.load(offsets_ptr + row_group + 1)
+#     padded_tile_start_ptr = x_ptr + row_group*x_stride_B + col_group*BLOCK_SIZE_N*x_stride_N
+#     padded_tile_offsets = tl.arange(0, end=BLOCK_SIZE_N*BLOCK_SIZE_D)
 
-    max_offset_B = (jagged_row_end_offset - jagged_row_start_offset - col_group*BLOCK_SIZE_N)*x_stride_N
-    mask = padded_tile_offsets < max_offset_B
-    padded_in_ptr = padded_tile_start_ptr + padded_tile_offsets
-    in_values = tl.load(padded_in_ptr, mask=mask)
+#     max_offset_B = (jagged_row_end_offset - jagged_row_start_offset - col_group*BLOCK_SIZE_N)*x_stride_N
+#     mask = padded_tile_offsets < max_offset_B
+#     padded_in_ptr = padded_tile_start_ptr + padded_tile_offsets
+#     in_values = tl.load(padded_in_ptr, mask=mask)
 
-    out_values_tile_start = out_values_ptr + (jagged_row_start_offset + col_group*BLOCK_SIZE_N)*out_values_stride_B
-    out_values_ptr = out_values_tile_start + tl.arange(0, BLOCK_SIZE_N*BLOCK_SIZE_D)
+#     out_values_tile_start = out_values_ptr + (jagged_row_start_offset + col_group*BLOCK_SIZE_N)*out_values_stride_B
+#     out_values_ptr = out_values_tile_start + tl.arange(0, BLOCK_SIZE_N*BLOCK_SIZE_D)
     
-    tl.store(out_values_ptr, in_values, mask=mask)
-    tl.store(out_offsets_ptr + row_group + tl.arange(0, 2), tl.join(jagged_row_start_offset, jagged_row_end_offset))
+#     tl.store(out_values_ptr, in_values, mask=mask)
+#     tl.store(out_offsets_ptr + row_group + tl.arange(0, 2), tl.join(jagged_row_start_offset, jagged_row_end_offset))
+
+
+def _padded_to_jagged(x, lengths, device="cpu"):
+    B, N, D = x.shape
+    out_values = []
+    out_offsets = [0]
+    for b in range(B):
+        valid_n = lengths[b].item()
+        values = x[b, :valid_n, :]
+        out_values.append(values)
+        out_offsets.append(out_offsets[-1] + valid_n)
+    out_values = torch.cat(out_values, dim=0).to(device)
+    out_offsets = torch.tensor(out_offsets, device=device)
+    return out_values, out_offsets

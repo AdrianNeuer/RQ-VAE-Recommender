@@ -14,6 +14,19 @@ torch.backends.cuda.enable_flash_sdp(True)
 AttentionInput = Union[Tensor, NestedTensor]
 
 
+def simple_attention(queries, keys, values, mask=None, is_causal=False):
+    # queries, keys, values: [B, N, D]
+    # mask: [B, N] 或 None
+    attn_scores = torch.matmul(queries, keys.transpose(-2, -1)) / queries.shape[-1] ** 0.5  # [B, N, N]
+    if mask is not None:
+        attn_scores = attn_scores.masked_fill(~mask.unsqueeze(1), float('-inf'))
+    if is_causal:
+        causal_mask = torch.tril(torch.ones_like(attn_scores)).bool()
+        attn_scores = attn_scores.masked_fill(~causal_mask, float('-inf'))
+    attn_weights = torch.softmax(attn_scores, dim=-1)
+    return attn_weights @ values  # [B, N, D]
+
+
 class KVCache(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -117,8 +130,9 @@ class Attend(nn.Module):
 
         dropout_p = 0. if not self.training else self.dropout
 
-        context_vec = F.scaled_dot_product_attention(
-            queries, keys, values, dropout_p=dropout_p, is_causal=is_causal)
+        # context_vec = F.scaled_dot_product_attention(
+        #     queries, keys, values, dropout_p=dropout_p, is_causal=is_causal)
+        context_vec = simple_attention(queries, keys, values, is_causal=is_causal)
         
         context_vec = context_vec.transpose(1, 2).flatten(-2)
         return context_vec

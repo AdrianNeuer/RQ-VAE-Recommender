@@ -58,6 +58,7 @@ def train(
 
     accelerator = Accelerator(
         split_batches=split_batches,
+        cpu=True,
         mixed_precision=mixed_precision_type if amp else 'no'
     )
 

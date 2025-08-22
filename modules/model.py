@@ -175,6 +175,8 @@ class EncoderDecoderRetrievalModel(nn.Module):
         for i in range(self.sem_id_dim):
             logits = self.forward(input_batch).logits
             probas_batched = F.softmax(logits / temperature, dim=-1)
+            num_categories = probas_batched.size(-1)
+            n_top_k_candidates = min(n_top_k_candidates, num_categories)
             samples_batched = torch.multinomial(probas_batched, num_samples=n_top_k_candidates)
 
             if generated is None:
@@ -263,7 +265,8 @@ class EncoderDecoderRetrievalModel(nn.Module):
                 logits = predict_out
                 out = logits[:, :-1, :].flatten(end_dim=1)
                 target = batch.sem_ids_fut.flatten(end_dim=1)
-                loss = rearrange(F.cross_entropy(out, target, reduction="none", ignore_index=-1), "(b n) -> b n", b=B).sum(axis=1).mean()
+                unred_loss = rearrange(F.cross_entropy(out, target, reduction="none", ignore_index=-1), "(b n) -> b n", b=B)
+                loss = unred_loss.sum(axis=1).mean()
             if not self.training and self.jagged_mode:
                 self.transformer.cached_enc_output = None
             loss_d = unred_loss.mean(axis=0)

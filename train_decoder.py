@@ -71,6 +71,7 @@ def train(
         params = locals()
 
     accelerator = Accelerator(
+        cpu=True,
         split_batches=split_batches,
         mixed_precision=mixed_precision_type if amp else 'no'
     )
